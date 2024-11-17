@@ -162,3 +162,6 @@ lets check for reused password (Bit of a cheat as their is only one other user)
 use evil-winrm -i 10.10.10.180 -u Administrator -p (Password)
 
 we have access and now we have the administrator flag
+
+As i am starting out i did use other walkthroughs to help when I got stuck, this is all part of how you learn - go as far as you can by yourself and then get help - you will learn the patterns and what to look for eventually
+
